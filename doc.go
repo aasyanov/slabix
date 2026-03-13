@@ -56,9 +56,8 @@
 // All allocated memory is GC-visible. Unsafe usage is limited to
 // compile-time size calculations and slice-pointer identity; no pointer
 // arithmetic leaks through the public API. [Handle] references carry
-// generation counters to detect
-// use-after-free. Double-free returns a clear error instead of corrupting
-// state.
+// generation counters to detect use-after-free. Double-free returns a
+// clear error instead of corrupting state.
 //
 // # Zero Dependencies
 //

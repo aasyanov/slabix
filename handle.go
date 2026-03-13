@@ -21,6 +21,10 @@ package slabix
 //   - Max slots per chunk:  1,048,576  (2^20)
 //   - Generation counter:   4,096 values (2^12) before wraparound
 //
+// All limits are enforced at runtime: exceeding the slot count per
+// chunk panics in [NewSlab]; exceeding the chunk count per shard or
+// the shard count returns [ErrOutOfMemory] or panics, respectively.
+//
 // The generation counter wraps around after 4,096 alloc/free cycles on
 // the same slot. A stale handle whose generation has wrapped to the
 // current value will appear valid — this is an accepted trade-off for

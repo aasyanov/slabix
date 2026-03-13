@@ -98,8 +98,9 @@ func defaultSlabConfig() slabConfig {
 // and applied in order; the last value wins for each setting.
 type SlabOption func(*slabConfig)
 
-// WithSlabCapacity sets the initial number of objects per slab chunk.
-// Must be positive. Default: 4096.
+// WithSlabCapacity sets the total initial capacity of the slab. The
+// capacity is divided evenly across shards; each shard receives one
+// initial chunk of size capacity/shards. Must be positive. Default: 4096.
 func WithSlabCapacity(n int) SlabOption {
 	return func(c *slabConfig) {
 		if n > 0 {

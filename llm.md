@@ -10,7 +10,7 @@
 4. Slab handles carry **generation counters** — stale handle after Free returns `ErrInvalidHandle`
 5. Huge buffers are tracked by **backing array pointer** — never reslice before Free
 6. All allocators are **thread-safe** — but per-goroutine Arena gives best throughput
-7. **No exponential growth** — all growth policies are capped at `max(initCap, 4096)`
+7. **No unbounded growth** — all growth policies are capped at `max(initCap, 4096)`
 
 ---
 
@@ -86,12 +86,12 @@ WithGrowable(bool)     // default true
 ### Slab
 
 ```go
-WithSlabCapacity(n)    // objects per initial chunk, default 4096
-WithShards(n)          // independent shards, default 1
+WithSlabCapacity(n)    // total initial capacity, split across shards; default 4096
+WithShards(n)          // independent shards, default 1; max 65,536
 WithSlabGrowable(bool) // default true
 WithGrowthPolicy(p)    // GrowFixed | GrowLinear | GrowAdaptive (default)
 WithMaxChunks(n)       // per shard, 0 = unlimited
-WithBatchHint(n)       // expected batch size, default 64
+WithBatchHint(n)       // reserved, currently unused; default 64
 ```
 
 ### Huge
@@ -117,8 +117,8 @@ Ceiling = `max(initCap, 4096)`. No policy exceeds this.
 ErrClosed        // operation on released allocator
 ErrOutOfMemory   // capacity exhausted + growth disabled or max chunks/blocks reached
 ErrDoubleFree    // handle or buffer freed twice
-ErrInvalidHandle // wrong allocator, stale generation, or nil buffer
-ErrTooLarge      // allocation exceeds maximum size
+ErrInvalidHandle // wrong allocator, stale generation, nil/empty buffer
+ErrTooLarge      // reserved for future use
 ```
 
 All created with `errors.New`, comparable with `==` and `errors.Is`.
@@ -130,16 +130,21 @@ All created with `errors.New`, comparable with `==` and `errors.Is`.
 ```go
 type Stats struct {
     Allocs         uint64  // cumulative
-    Frees          uint64  // cumulative
+    Frees          uint64  // cumulative (includes bulk-free adjustments)
     ActiveObjects  uint64  // Allocs - Frees
     BytesAllocated uint64  // total backing memory reserved
     BytesInUse     uint64  // memory occupied by live objects
-    BlockCount     uint64  // backing blocks/chunks
+    BlockCount     uint64  // backing blocks/chunks/buffers
+    GrowEvents     uint64  // cumulative backing-storage expansions
+    OOMs           uint64  // cumulative ErrOutOfMemory rejections
     Resets         uint64  // arena only
 }
 ```
 
 All fields are atomic. Snapshot is consistent per field but not across fields (no global lock).
+
+After `Release`: `ActiveObjects`, `BytesInUse`, `BytesAllocated`, `BlockCount` are zeroed.
+Cumulative counters (`Allocs`, `Frees`, `GrowEvents`, `OOMs`, `Resets`) are preserved.
 
 ---
 
@@ -157,7 +162,8 @@ NewArena/NewSlab/NewHuge
     ▼
   CLOSED ── Alloc/Free/BatchAlloc → ErrClosed
             Reset/EnsureCap → silent no-op
-            Stats/Cap/Len → zeroed values
+            Cap/Len → 0
+            Stats → gauges zeroed, cumulative counters preserved
             Release() → no-op (CAS fails)
 ```
 
@@ -171,13 +177,14 @@ Double-check under lock prevents race between Alloc and concurrent Release.
 
 ```
 NewArena → blocks[0] (objsPerBlock = blockSize / sizeof(T))
-Alloc    → blocks[cur].data[pos]; pos++; if full → grow (if allowed)
+Alloc    → blocks[cur].data[pos]; pos++; if full → next retained block or grow
 Reset    → cur=0, pos=0, bytesInUse=0 (blocks retained)
+EnsureCap→ reset + grow blocks if totalCap < n (respects maxBlocks)
 Release  → blocks=nil, closed=true
 ```
 
 - Mutex protects `blocks`, `cur`, `pos`
-- `EnsureCap(n)` resets + grows blocks if `totalCap < n`
+- After Reset, allocations reuse retained blocks before growing new ones
 
 ### Slab
 
@@ -190,7 +197,8 @@ Free    → entry.alive=false, gen++, push to freelist head
 
 - Each shard is independently locked
 - Handle packs: shard (16 bits), chunk (16 bits), slot (20 bits), generation (12 bits)
-- `BatchAlloc(n)` holds shard lock for entire batch — single acquisition
+- All Handle limits are enforced at runtime (panic or ErrOutOfMemory)
+- `BatchAlloc(n)` holds shard lock for entire batch; returns partial result on OOM
 
 ### Huge
 

@@ -69,6 +69,11 @@ type slabEntry[T any] struct {
 // bit-packing layout.
 const maxSlotIndex = 1 << 20 // 1,048,576
 
+// maxChunkIndex is the maximum number of chunks per shard, constrained
+// by the 16-bit chunk field in [Handle]. Exceeding this limit returns
+// [ErrOutOfMemory] instead of corrupting Handle values.
+const maxChunkIndex = 1 << 16 // 65,536
+
 // NewSlab creates a [Slab] pool for objects of type T. One initial
 // chunk per shard is allocated immediately. The total initial capacity
 // is split evenly across shards.
@@ -81,6 +86,10 @@ func NewSlab[T any](opts ...SlabOption) *Slab[T] {
 	cfg := defaultSlabConfig()
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	if cfg.shards > maxChunkIndex {
+		panic("slabix: shard count exceeds Handle limit (1<<16)")
 	}
 
 	objSz := unsafe.Sizeof(*new(T))
@@ -209,6 +218,11 @@ func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 		}
 
 		if sh.cfg.maxChunks > 0 && len(sh.chunks) >= sh.cfg.maxChunks {
+			sh.stats.addOOM()
+			return Handle[T]{}, ErrOutOfMemory
+		}
+
+		if len(sh.chunks) >= maxChunkIndex {
 			sh.stats.addOOM()
 			return Handle[T]{}, ErrOutOfMemory
 		}
