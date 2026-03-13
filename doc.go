@@ -24,9 +24,10 @@
 //
 // # Design
 //
-// All allocators use Go generics for type safety — no interface{} or type
-// assertions in the hot path. Memory remains GC-visible; unsafe operations
-// are confined to internal alignment helpers.
+// Arena and Slab use Go generics for type safety — no interface{} casts
+// in the allocation hot path. Huge operates on []byte directly. Memory
+// remains GC-visible; unsafe usage is minimal and confined to size
+// calculations and internal alignment helpers.
 //
 // Configuration follows the functional option pattern:
 //
@@ -52,9 +53,10 @@
 //
 // # Safety
 //
-// All allocated memory is GC-visible. Unsafe pointer arithmetic is
-// confined to the internal/align package and never leaks through the
-// public API. [Handle] references carry generation counters to detect
+// All allocated memory is GC-visible. Unsafe usage is limited to
+// compile-time size calculations and slice-pointer identity; no pointer
+// arithmetic leaks through the public API. [Handle] references carry
+// generation counters to detect
 // use-after-free. Double-free returns a clear error instead of corrupting
 // state.
 //

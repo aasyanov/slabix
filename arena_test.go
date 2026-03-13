@@ -488,6 +488,74 @@ func TestArenaEnsureCapGrowNoFalseReset(t *testing.T) {
 	}
 }
 
+func TestArenaActiveObjectsAfterReset(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(4096))
+
+	for i := 0; i < 50; i++ {
+		arena.Alloc()
+	}
+
+	s := arena.Stats()
+	if s.ActiveObjects != 50 {
+		t.Fatalf("ActiveObjects = %d before Reset, want 50", s.ActiveObjects)
+	}
+
+	arena.Reset()
+
+	s = arena.Stats()
+	if s.ActiveObjects != 0 {
+		t.Fatalf("ActiveObjects = %d after Reset, want 0", s.ActiveObjects)
+	}
+
+	for i := 0; i < 10; i++ {
+		arena.Alloc()
+	}
+
+	s = arena.Stats()
+	if s.ActiveObjects != 10 {
+		t.Fatalf("ActiveObjects = %d after re-alloc, want 10", s.ActiveObjects)
+	}
+}
+
+func TestArenaActiveObjectsAfterEnsureCap(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 100))
+
+	for i := 0; i < 50; i++ {
+		arena.Alloc()
+	}
+
+	arena.EnsureCap(100)
+
+	s := arena.Stats()
+	if s.ActiveObjects != 0 {
+		t.Fatalf("ActiveObjects = %d after EnsureCap reuse, want 0", s.ActiveObjects)
+	}
+
+	for i := 0; i < 20; i++ {
+		arena.Alloc()
+	}
+
+	s = arena.Stats()
+	if s.ActiveObjects != 20 {
+		t.Fatalf("ActiveObjects = %d after re-alloc, want 20", s.ActiveObjects)
+	}
+}
+
+func TestArenaActiveObjectsAfterEnsureCapGrow(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 4))
+
+	for i := 0; i < 4; i++ {
+		arena.Alloc()
+	}
+
+	arena.EnsureCap(100)
+
+	s := arena.Stats()
+	if s.ActiveObjects != 0 {
+		t.Fatalf("ActiveObjects = %d after EnsureCap grow, want 0", s.ActiveObjects)
+	}
+}
+
 // --- Benchmarks ---
 
 func BenchmarkArenaAlloc(b *testing.B) {

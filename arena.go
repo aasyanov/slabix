@@ -243,6 +243,7 @@ func (a *Arena[T]) Reset() {
 	}
 
 	a.mu.Lock()
+	a.stats.resetActive()
 	a.cur = 0
 	a.pos = 0
 	a.stats.bytesInUse.Store(0)
@@ -259,6 +260,7 @@ func (a *Arena[T]) Release() {
 	}
 
 	a.mu.Lock()
+	a.stats.resetActive()
 	a.blocks = nil
 	a.cur = 0
 	a.pos = 0
@@ -299,6 +301,7 @@ func (a *Arena[T]) EnsureCap(n int) {
 	}
 
 	if totalCap >= n {
+		a.stats.resetActive()
 		a.cur = 0
 		a.pos = 0
 		a.stats.bytesInUse.Store(0)
@@ -325,6 +328,7 @@ func (a *Arena[T]) EnsureCap(n int) {
 		totalCap += blockCap
 	}
 
+	a.stats.resetActive()
 	a.cur = 0
 	a.pos = 0
 	a.stats.bytesInUse.Store(0)

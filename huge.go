@@ -177,6 +177,7 @@ func (h *Huge) Release() {
 	h.live = nil
 	h.mu.Unlock()
 
+	h.stats.resetActive()
 	h.stats.bytesInUse.Store(0)
 	h.stats.bytesAllocated.Store(0)
 	h.stats.blockCount.Store(0)

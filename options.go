@@ -152,7 +152,8 @@ func WithMaxChunks(n int) SlabOption {
 }
 
 // WithBatchHint sets the expected batch size for [Slab.BatchAlloc].
-// The slab may pre-size internal structures accordingly. Default: 64.
+// Reserved for future pre-sizing optimizations; currently stored but
+// not used. Default: 64.
 func WithBatchHint(n int) SlabOption {
 	return func(c *slabConfig) {
 		if n > 0 {

@@ -135,6 +135,17 @@ func (sc *statsCollector) addReset() {
 	sc.resets.Add(1)
 }
 
+// resetActive adjusts the free counter so that ActiveObjects
+// (allocs − frees) becomes zero. Called when an allocator bulk-frees
+// all objects (Reset, EnsureCap, Release).
+func (sc *statsCollector) resetActive() {
+	allocs := sc.allocs.Load()
+	frees := sc.frees.Load()
+	if delta := allocs - frees; delta > 0 {
+		sc.frees.Add(delta)
+	}
+}
+
 // snapshot returns a point-in-time Stats copy. Each field is loaded
 // independently; the snapshot is per-field consistent but not globally
 // linearizable.

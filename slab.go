@@ -441,6 +441,7 @@ func (s *Slab[T]) Release() {
 		sh.mu.Unlock()
 	}
 
+	s.stats.resetActive()
 	s.stats.bytesInUse.Store(0)
 	s.stats.bytesAllocated.Store(0)
 	s.stats.blockCount.Store(0)

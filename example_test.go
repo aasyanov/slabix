@@ -41,6 +41,28 @@ func ExampleArena_AllocSlice() {
 	// 3
 }
 
+func ExampleArena_EnsureCap() {
+	arena := slabix.NewArena[int64](
+		slabix.WithBlockSize(4096),
+	)
+	defer arena.Release()
+
+	for cycle := 0; cycle < 3; cycle++ {
+		arena.EnsureCap(100)
+		for i := 0; i < 100; i++ {
+			v, _ := arena.Alloc()
+			*v = int64(cycle*100 + i)
+		}
+	}
+
+	fmt.Println("allocs:", arena.Stats().Allocs)
+	fmt.Println("active:", arena.Stats().ActiveObjects)
+
+	// Output:
+	// allocs: 300
+	// active: 100
+}
+
 type CacheEntry struct {
 	Key   int64
 	Value int64

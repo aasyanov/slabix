@@ -580,7 +580,36 @@ func TestSlabLastFreeChunkHintPreserved(t *testing.T) {
 	pool.Free(h4)
 }
 
+func TestSlabBatchAllocPartialOOM(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(4), WithSlabGrowable(false))
+
+	handles, err := pool.BatchAlloc(10)
+	if err != ErrOutOfMemory {
+		t.Fatalf("got %v, want ErrOutOfMemory", err)
+	}
+	if len(handles) != 4 {
+		t.Fatalf("got %d partial handles, want 4", len(handles))
+	}
+
+	for i, h := range handles {
+		if pool.Get(h) == nil {
+			t.Fatalf("partial handle %d is invalid", i)
+		}
+	}
+
+	pool.BatchFree(handles)
+}
+
 // --- Benchmarks ---
+
+func BenchmarkSlabGet(b *testing.B) {
+	pool := NewSlab[testNode](WithSlabCapacity(1 << 16))
+	h, _ := pool.Alloc()
+	b.ResetTimer()
+	for b.Loop() {
+		pool.Get(h)
+	}
+}
 
 func BenchmarkSlabAlloc(b *testing.B) {
 	pool := NewSlab[testNode](WithSlabCapacity(1 << 16))
