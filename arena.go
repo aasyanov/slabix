@@ -14,6 +14,10 @@ import (
 // memory where individual frees are unnecessary. Allocation is O(1)
 // with no freelist overhead.
 //
+// After [Arena.Reset], all existing blocks are retained and reused by
+// subsequent allocations. No memory is wasted on duplicate blocks.
+// Use [Arena.EnsureCap] for repeated cycles with a known working set.
+//
 // Arena is safe for concurrent use. For maximum throughput in parallel
 // workloads, create one Arena per goroutine or per request.
 type Arena[T any] struct {
@@ -21,19 +25,21 @@ type Arena[T any] struct {
 	objSz  uintptr
 	mu     sync.Mutex
 	blocks []arenaBlock[T]
-	cur    int
-	pos    int
+	cur    int // index of the current block being filled
+	pos    int // next free slot within blocks[cur]
 	closed atomic.Bool
 	stats  statsCollector
 }
 
+// arenaBlock is a contiguous slab of T values within an Arena. Each
+// block is allocated as a single Go slice and filled sequentially.
 type arenaBlock[T any] struct {
 	data []T
 }
 
 // NewArena creates an [Arena] that allocates objects of type T from
-// contiguous blocks. The block size determines how many objects fit in
-// each block.
+// contiguous blocks. One initial block is allocated immediately based
+// on the configured block size.
 //
 //	arena := slabix.NewArena[Entry](
 //	    slabix.WithBlockSize(4 * 1024 * 1024),
@@ -70,7 +76,8 @@ func NewArena[T any](opts ...ArenaOption) *Arena[T] {
 }
 
 // Alloc returns a pointer to a freshly zeroed T from the arena. If the
-// current block is full, a new block is allocated (subject to
+// current block is full, the next retained block is reused; if no
+// retained blocks remain, a new block is allocated (subject to
 // [WithGrowable] and [WithMaxBlocks] limits). Returns [ErrOutOfMemory]
 // when capacity is exhausted.
 //
@@ -91,6 +98,9 @@ func (a *Arena[T]) Alloc() (*T, error) {
 	return ptr, err
 }
 
+// allocLocked performs the bump-pointer allocation under a.mu.
+// On block exhaustion it first tries to advance to a retained block
+// (from a previous growth cycle), falling back to a new allocation.
 func (a *Arena[T]) allocLocked() (*T, error) {
 	blk := &a.blocks[a.cur]
 
@@ -102,6 +112,12 @@ func (a *Arena[T]) allocLocked() (*T, error) {
 		a.stats.addAlloc()
 		a.stats.addInUse(uint64(a.objSz))
 		return ptr, nil
+	}
+
+	if a.cur+1 < len(a.blocks) {
+		a.cur++
+		a.pos = 0
+		return a.allocLocked()
 	}
 
 	if !a.cfg.growable {
@@ -130,9 +146,12 @@ func (a *Arena[T]) allocLocked() (*T, error) {
 }
 
 // AllocSlice returns a contiguous slice of n freshly zeroed T values
-// from the arena. If the current block cannot hold n objects, a new
-// block is allocated (subject to [WithGrowable] and [WithMaxBlocks]
-// limits). The returned slice is always contiguous within a single block.
+// from the arena. If the current block cannot hold n objects, retained
+// blocks are checked first; if none can fit the slice, a new block is
+// allocated (subject to [WithGrowable] and [WithMaxBlocks] limits).
+// The returned slice is always contiguous within a single block.
+//
+// AllocSlice(0) and AllocSlice with negative n return (nil, nil).
 //
 // The returned slice is valid until [Arena.Reset] or [Arena.Release].
 func (a *Arena[T]) AllocSlice(n int) ([]T, error) {
@@ -153,6 +172,9 @@ func (a *Arena[T]) AllocSlice(n int) ([]T, error) {
 	return s, err
 }
 
+// allocSliceLocked performs the contiguous-slice allocation under a.mu.
+// It scans forward through retained blocks looking for one with enough
+// remaining capacity before falling back to a new allocation.
 func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 	blk := &a.blocks[a.cur]
 
@@ -166,6 +188,14 @@ func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 		a.stats.addAllocs(uint64(n))
 		a.stats.addInUse(uint64(n) * uint64(a.objSz))
 		return s, nil
+	}
+
+	for a.cur+1 < len(a.blocks) {
+		a.cur++
+		a.pos = 0
+		if n <= len(a.blocks[a.cur].data) {
+			return a.allocSliceLocked(n)
+		}
 	}
 
 	if !a.cfg.growable {
@@ -195,8 +225,10 @@ func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 	return a.allocSliceLocked(n)
 }
 
-// Reset resets the arena to its initial state, making all previously
-// allocated objects invalid. Backing memory is retained for reuse.
+// Reset resets the arena's bump pointer to the beginning, making all
+// previously allocated objects invalid. All backing blocks are retained
+// and will be reused by subsequent allocations — no memory is freed or
+// reallocated.
 //
 // After Reset, all pointers and slices returned by previous [Arena.Alloc]
 // or [Arena.AllocSlice] calls are invalid and must not be used.
@@ -237,9 +269,10 @@ func (a *Arena[T]) Stats() Stats {
 }
 
 // EnsureCap ensures the arena can hold at least n objects without
-// allocating new blocks. If current capacity is sufficient, the bump
-// pointer is reset and existing blocks are reused. Otherwise, blocks
-// are grown to fit.
+// allocating new blocks. The bump pointer is always rewound to the
+// beginning. If current capacity is sufficient, existing blocks are
+// reused as-is. Otherwise, additional blocks are allocated to reach
+// the requested capacity.
 //
 // This is the recommended pattern for repeated parse/execute cycles
 // where the working set size is known ahead of time:
@@ -290,7 +323,6 @@ func (a *Arena[T]) EnsureCap(n int) {
 	a.cur = 0
 	a.pos = 0
 	a.stats.bytesInUse.Store(0)
-	a.stats.addReset()
 }
 
 // Cap returns the total number of objects that can be held across all
@@ -305,7 +337,10 @@ func (a *Arena[T]) Cap() int {
 	return n
 }
 
-// Len returns the number of objects currently allocated across all blocks.
+// Len returns the number of objects currently allocated (live) across
+// all blocks. This is computed from the bump-pointer position: all
+// blocks before the current one are fully used, plus pos slots in the
+// current block.
 func (a *Arena[T]) Len() int {
 	a.mu.Lock()
 	n := 0

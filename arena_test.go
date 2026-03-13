@@ -369,6 +369,125 @@ func TestArenaLenMultiBlock(t *testing.T) {
 	}
 }
 
+func TestArenaBlockReuseAfterReset(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 4)) // ~4 objects per block
+
+	for i := 0; i < 20; i++ {
+		arena.Alloc()
+	}
+
+	blocksAfterFirstFill := arena.Stats().BlockCount
+	arena.Reset()
+
+	for i := 0; i < 20; i++ {
+		_, err := arena.Alloc()
+		if err != nil {
+			t.Fatalf("Alloc %d after Reset: %v", i, err)
+		}
+	}
+
+	blocksAfterSecondFill := arena.Stats().BlockCount
+	if blocksAfterSecondFill != blocksAfterFirstFill {
+		t.Fatalf("BlockCount grew from %d to %d after Reset+refill, want no growth",
+			blocksAfterFirstFill, blocksAfterSecondFill)
+	}
+
+	if arena.Len() != 20 {
+		t.Fatalf("Len = %d, want 20", arena.Len())
+	}
+}
+
+func TestArenaBlockReuseAfterResetMultiCycle(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 10))
+
+	for cycle := 0; cycle < 10; cycle++ {
+		for i := 0; i < 10; i++ {
+			_, err := arena.Alloc()
+			if err != nil {
+				t.Fatalf("cycle %d, Alloc %d: %v", cycle, i, err)
+			}
+		}
+		arena.Reset()
+	}
+
+	s := arena.Stats()
+	if s.BlockCount != 1 {
+		t.Fatalf("BlockCount = %d after 10 reset cycles with 1-block capacity, want 1", s.BlockCount)
+	}
+	if s.GrowEvents != 0 {
+		t.Fatalf("GrowEvents = %d, want 0 (no growth needed)", s.GrowEvents)
+	}
+}
+
+func TestArenaAllocSliceNegative(t *testing.T) {
+	arena := NewArena[testEntry]()
+	s, err := arena.AllocSlice(-1)
+	if err != nil {
+		t.Fatalf("AllocSlice(-1): %v", err)
+	}
+	if s != nil {
+		t.Fatal("expected nil for negative n")
+	}
+}
+
+func TestArenaOOMStats(t *testing.T) {
+	arena := NewArena[testEntry](
+		WithBlockSize(24*2),
+		WithGrowable(false),
+	)
+
+	for {
+		_, err := arena.Alloc()
+		if err != nil {
+			break
+		}
+	}
+
+	s := arena.Stats()
+	if s.OOMs != 1 {
+		t.Fatalf("OOMs = %d, want 1", s.OOMs)
+	}
+
+	_, _ = arena.Alloc()
+	_, _ = arena.Alloc()
+
+	s = arena.Stats()
+	if s.OOMs != 3 {
+		t.Fatalf("OOMs = %d after 2 more failed allocs, want 3", s.OOMs)
+	}
+}
+
+func TestArenaAllocSliceReuseAfterReset(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 10))
+
+	arena.AllocSlice(10)
+	blocksAfter := arena.Stats().BlockCount
+	arena.Reset()
+
+	s, err := arena.AllocSlice(10)
+	if err != nil {
+		t.Fatalf("AllocSlice after Reset: %v", err)
+	}
+	if len(s) != 10 {
+		t.Fatalf("got len %d, want 10", len(s))
+	}
+
+	if arena.Stats().BlockCount != blocksAfter {
+		t.Fatalf("BlockCount grew after Reset+AllocSlice, want no growth")
+	}
+}
+
+func TestArenaEnsureCapGrowNoFalseReset(t *testing.T) {
+	arena := NewArena[testEntry](WithBlockSize(24 * 4))
+
+	arena.EnsureCap(100)
+
+	s := arena.Stats()
+	if s.Resets != 0 {
+		t.Fatalf("Resets = %d after EnsureCap grow, want 0", s.Resets)
+	}
+}
+
 // --- Benchmarks ---
 
 func BenchmarkArenaAlloc(b *testing.B) {
