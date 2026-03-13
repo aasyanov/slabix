@@ -4,7 +4,7 @@ package align
 
 import "unsafe"
 
-// CacheLine is the typical CPU cache line size in bytes.
+// CacheLine is the typical CPU cache line size in bytes (x86-64, ARM64).
 const CacheLine = 64
 
 // Of returns the smallest multiple of alignment that is >= n.
@@ -14,6 +14,7 @@ func Of(n, alignment uintptr) uintptr {
 }
 
 // SizeOf returns the aligned size of T, rounded up to the given alignment.
+// alignment must be a non-zero power of two.
 func SizeOf[T any](alignment uintptr) uintptr {
 	sz := unsafe.Sizeof(*new(T))
 	return Of(sz, alignment)

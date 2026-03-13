@@ -30,12 +30,14 @@ func TestOf(t *testing.T) {
 func TestSizeOf(t *testing.T) {
 	type s32 struct{ _, _, _, _ int64 }
 
-	got := SizeOf[s32](64)
-	if got < 32 {
-		t.Fatalf("SizeOf[s32](64) = %d, want >= 32", got)
+	if got := SizeOf[s32](64); got != 64 {
+		t.Fatalf("SizeOf[s32](64) = %d, want 64", got)
 	}
-	if got%64 != 0 {
-		t.Fatalf("SizeOf[s32](64) = %d, not aligned to 64", got)
+	if got := SizeOf[s32](8); got != 32 {
+		t.Fatalf("SizeOf[s32](8) = %d, want 32", got)
+	}
+	if got := SizeOf[struct{}](64); got != 0 {
+		t.Fatalf("SizeOf[struct{}](64) = %d, want 0", got)
 	}
 }
 
