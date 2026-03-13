@@ -8,6 +8,25 @@ package slabix
 // a handle to a different slab or using it after [Slab.Free] results
 // in [ErrInvalidHandle].
 //
+// # Bit-packing layout
+//
+// Handle packs shard, chunk, slot, and generation into two uint32 fields:
+//
+//	chunk: [shard 16 bits | chunkIdx 16 bits]
+//	index: [gen 12 bits  | slotIdx 20 bits ]
+//
+// This yields the following limits:
+//   - Max shards:          65,536  (2^16)
+//   - Max chunks per shard: 65,536  (2^16)
+//   - Max slots per chunk:  1,048,576  (2^20)
+//   - Generation counter:   4,096 values (2^12) before wraparound
+//
+// The generation counter wraps around after 4,096 alloc/free cycles on
+// the same slot. A stale handle whose generation has wrapped to the
+// current value will appear valid — this is an accepted trade-off for
+// compact handles. In practice, 4,096 cycles per slot is sufficient
+// for most workloads.
+//
 // The zero value is invalid and safe to compare:
 //
 //	var h slabix.Handle[Node]

@@ -28,7 +28,7 @@ type Slab[T any] struct {
 	cfg    slabConfig
 	objSz  uintptr
 	shards []slabShard[T]
-	seq    atomic.Uint64
+	seq    atomic.Uint64 // round-robin counter for shard selection
 	closed atomic.Bool
 	stats  statsCollector
 }
@@ -38,28 +38,40 @@ type Slab[T any] struct {
 type slabShard[T any] struct {
 	mu            sync.Mutex
 	chunks        []slabChunk[T]
-	lastFreeChunk int // cached index of last chunk with free slots
+	lastFreeChunk int // cached hint: index of a chunk with free slots, -1 = unknown
 	initCap       int
 	objSz         uintptr
 	cfg           slabConfig
-	stats         *statsCollector
+	stats         *statsCollector // points to the parent Slab's collector
 }
 
 // slabChunk holds a contiguous array of objects with per-slot metadata.
+// Each chunk maintains its own embedded freelist via the entry.next
+// linked list.
 type slabChunk[T any] struct {
 	entries  []slabEntry[T]
 	freehead int32 // chunk-local freelist head, -1 = empty
 	freeLen  int   // number of free slots in this chunk
 }
 
+// slabEntry is a single slot within a chunk. It stores the user value
+// alongside allocation metadata: a generation counter for use-after-free
+// detection, an alive flag, and a freelist link.
 type slabEntry[T any] struct {
 	value T
-	gen   uint32
+	gen   uint32 // incremented on each free; used to detect stale handles
 	alive bool
 	next  int32 // freelist link within this chunk, -1 = end
 }
 
-// NewSlab creates a [Slab] pool for objects of type T.
+// maxSlotIndex is the maximum number of slots per chunk, constrained
+// by the 20-bit slot field in [Handle]. See handle.go for the full
+// bit-packing layout.
+const maxSlotIndex = 1 << 20 // 1,048,576
+
+// NewSlab creates a [Slab] pool for objects of type T. One initial
+// chunk per shard is allocated immediately. The total initial capacity
+// is split evenly across shards.
 //
 //	pool := slabix.NewSlab[Node](
 //	    slabix.WithSlabCapacity(8192),
@@ -100,8 +112,13 @@ func NewSlab[T any](opts ...SlabOption) *Slab[T] {
 	return s
 }
 
-// addChunk appends a new chunk with the given capacity and a full freelist.
+// addChunk appends a new chunk with the given capacity and a full
+// freelist. Panics if cap exceeds the Handle slot-index limit.
 func (sh *slabShard[T]) addChunk(cap int) {
+	if cap > maxSlotIndex {
+		panic("slabix: chunk capacity exceeds Handle slot limit (1<<20)")
+	}
+
 	chunk := slabChunk[T]{
 		entries:  make([]slabEntry[T], cap),
 		freehead: 0,
@@ -112,6 +129,7 @@ func (sh *slabShard[T]) addChunk(cap int) {
 		chunk.entries[i].next = int32(i + 1)
 		chunk.entries[i].gen = 1
 	}
+
 	chunk.entries[cap-1].next = -1
 
 	sh.chunks = append(sh.chunks, chunk)
@@ -120,8 +138,13 @@ func (sh *slabShard[T]) addChunk(cap int) {
 }
 
 // nextChunkSize computes the size of the next chunk based on the
-// configured [GrowthPolicy]. No policy ever exceeds the adaptive
-// ceiling (max of initCap and 4096), preventing runaway memory growth.
+// configured [GrowthPolicy].
+//
+//   - [GrowFixed]: always returns initCap, ignoring the ceiling.
+//   - [GrowLinear]: adds initCap to the previous chunk size, capped at
+//     the ceiling (max of initCap and 4096).
+//   - [GrowAdaptive]: doubles the previous chunk size, capped at the
+//     same ceiling.
 func (sh *slabShard[T]) nextChunkSize() int {
 	prevCap := len(sh.chunks[len(sh.chunks)-1].entries)
 	ceiling := sh.initCap
@@ -171,9 +194,12 @@ func (s *Slab[T]) Alloc() (Handle[T], error) {
 	}
 	h, err := sh.alloc(uint32(idx))
 	sh.mu.Unlock()
+
 	return h, err
 }
 
+// alloc performs the allocation under sh.mu. It pops a slot from the
+// freelist of a chunk with available space, growing the shard if needed.
 func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 	chunkIdx := sh.findFreeChunk()
 	if chunkIdx == -1 {
@@ -181,10 +207,12 @@ func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 			sh.stats.addOOM()
 			return Handle[T]{}, ErrOutOfMemory
 		}
+
 		if sh.cfg.maxChunks > 0 && len(sh.chunks) >= sh.cfg.maxChunks {
 			sh.stats.addOOM()
 			return Handle[T]{}, ErrOutOfMemory
 		}
+
 		sh.addChunk(sh.nextChunkSize())
 		sh.stats.addGrow()
 		chunkIdx = len(sh.chunks) - 1
@@ -205,7 +233,7 @@ func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 	sh.stats.addAlloc()
 	sh.stats.addInUse(uint64(sh.objSz))
 
-	if chunk.freeLen == 0 {
+	if chunk.freeLen == 0 && sh.lastFreeChunk == chunkIdx {
 		sh.lastFreeChunk = -1
 	}
 
@@ -216,25 +244,29 @@ func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 }
 
 // findFreeChunk returns the index of a chunk with free slots using
-// the cached lastFreeChunk hint for O(1) fast path.
+// the cached lastFreeChunk hint for O(1) fast path. Falls back to a
+// linear scan if the hint is stale.
 func (sh *slabShard[T]) findFreeChunk() int {
 	if sh.lastFreeChunk >= 0 && sh.lastFreeChunk < len(sh.chunks) {
 		if sh.chunks[sh.lastFreeChunk].freeLen > 0 {
 			return sh.lastFreeChunk
 		}
 	}
+
 	for i := range sh.chunks {
 		if sh.chunks[i].freeLen > 0 {
 			sh.lastFreeChunk = i
 			return i
 		}
 	}
+
 	sh.lastFreeChunk = -1
 	return -1
 }
 
 // Get returns a pointer to the object referenced by h. The pointer is
-// valid until the handle is freed. Returns nil if h is invalid.
+// valid until the handle is freed. Returns nil if h is invalid, stale,
+// or the pool is closed.
 func (s *Slab[T]) Get(h Handle[T]) *T {
 	if s.closed.Load() || h.IsZero() {
 		return nil
@@ -256,6 +288,7 @@ func (s *Slab[T]) Get(h Handle[T]) *T {
 	if int(chunkIdx) >= len(sh.chunks) {
 		return nil
 	}
+
 	chunk := &sh.chunks[chunkIdx]
 	if int(slotIdx) >= len(chunk.entries) {
 		return nil
@@ -270,7 +303,9 @@ func (s *Slab[T]) Get(h Handle[T]) *T {
 }
 
 // Free returns the object referenced by h to the pool. The handle and
-// any pointers obtained via [Slab.Get] become invalid.
+// any pointers obtained via [Slab.Get] become invalid. Returns
+// [ErrDoubleFree] if the slot is already free, [ErrInvalidHandle] if
+// the handle is stale or out of range.
 func (s *Slab[T]) Free(h Handle[T]) error {
 	if s.closed.Load() {
 		return ErrClosed
@@ -292,13 +327,18 @@ func (s *Slab[T]) Free(h Handle[T]) error {
 	sh.mu.Lock()
 	err := sh.free(chunkIdx, slotIdx, gen)
 	sh.mu.Unlock()
+
 	return err
 }
 
+// free returns the slot to the chunk's freelist under sh.mu. It zeroes
+// the value, increments the generation counter, and updates the
+// freelist hint.
 func (sh *slabShard[T]) free(chunkIdx, slotIdx, gen uint32) error {
 	if int(chunkIdx) >= len(sh.chunks) {
 		return ErrInvalidHandle
 	}
+
 	chunk := &sh.chunks[chunkIdx]
 	if int(slotIdx) >= len(chunk.entries) {
 		return ErrInvalidHandle
@@ -308,6 +348,7 @@ func (sh *slabShard[T]) free(chunkIdx, slotIdx, gen uint32) error {
 	if !entry.alive {
 		return ErrDoubleFree
 	}
+
 	if entry.gen != gen {
 		return ErrInvalidHandle
 	}
@@ -334,10 +375,13 @@ func (sh *slabShard[T]) free(chunkIdx, slotIdx, gen uint32) error {
 // are performed under a single lock acquisition per shard for reduced
 // overhead. If the slab cannot satisfy the full batch, it returns a
 // partial result with [ErrOutOfMemory].
+//
+// BatchAlloc(0) and BatchAlloc with negative n return (nil, nil).
 func (s *Slab[T]) BatchAlloc(n int) ([]Handle[T], error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
 	}
+
 	if n <= 0 {
 		return nil, nil
 	}
@@ -357,9 +401,6 @@ func (s *Slab[T]) BatchAlloc(n int) ([]Handle[T], error) {
 			h, err := sh.alloc(uint32(idx))
 			if err != nil {
 				sh.mu.Unlock()
-				if err == ErrOutOfMemory {
-					return handles, err
-				}
 				return handles, err
 			}
 			handles = append(handles, h)
@@ -371,7 +412,8 @@ func (s *Slab[T]) BatchAlloc(n int) ([]Handle[T], error) {
 }
 
 // BatchFree frees all handles in the slice. Returns the first error
-// encountered, but continues freeing remaining handles.
+// encountered, but continues freeing remaining handles to avoid
+// resource leaks.
 func (s *Slab[T]) BatchFree(handles []Handle[T]) error {
 	var firstErr error
 	for _, h := range handles {
@@ -379,6 +421,7 @@ func (s *Slab[T]) BatchFree(handles []Handle[T]) error {
 			firstErr = err
 		}
 	}
+
 	return firstErr
 }
 
@@ -419,19 +462,23 @@ func (s *Slab[T]) Cap() int {
 		}
 		sh.mu.Unlock()
 	}
+
 	return n
 }
 
 // Len returns the number of currently allocated (live) objects across
-// all shards.
+// all shards, derived from the atomic Allocs − Frees counters.
 func (s *Slab[T]) Len() int {
 	st := s.stats.snapshot()
 	return int(st.ActiveObjects)
 }
 
+// pickShard returns the next shard index using a round-robin counter.
+// Single-shard pools skip the atomic increment.
 func (s *Slab[T]) pickShard() int {
 	if len(s.shards) == 1 {
 		return 0
 	}
+
 	return int(s.seq.Add(1) % uint64(len(s.shards)))
 }

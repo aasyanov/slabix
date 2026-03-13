@@ -498,6 +498,88 @@ func TestSlabLen(t *testing.T) {
 	}
 }
 
+func TestSlabBatchAllocNegative(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(8))
+	handles, err := pool.BatchAlloc(-1)
+	if err != nil {
+		t.Fatalf("BatchAlloc(-1): %v", err)
+	}
+	if handles != nil {
+		t.Fatal("expected nil handles for negative n")
+	}
+}
+
+func TestSlabOOMStats(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(4), WithSlabGrowable(false))
+
+	for i := 0; i < 4; i++ {
+		pool.Alloc()
+	}
+
+	pool.Alloc()
+	pool.Alloc()
+
+	s := pool.Stats()
+	if s.OOMs != 2 {
+		t.Fatalf("OOMs = %d, want 2", s.OOMs)
+	}
+}
+
+func TestSlabGrowEventsStats(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(4))
+
+	for i := 0; i < 20; i++ {
+		pool.Alloc()
+	}
+
+	s := pool.Stats()
+	if s.GrowEvents == 0 {
+		t.Fatal("GrowEvents = 0 after exceeding initial capacity, want > 0")
+	}
+	if s.GrowEvents >= s.BlockCount {
+		t.Fatalf("GrowEvents (%d) >= BlockCount (%d), want GrowEvents < BlockCount (initial chunks are not grows)",
+			s.GrowEvents, s.BlockCount)
+	}
+}
+
+func TestSlabBatchFreeMixed(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(8))
+	h1, _ := pool.Alloc()
+	h2, _ := pool.Alloc()
+	pool.Free(h1)
+
+	err := pool.BatchFree([]Handle[testNode]{h1, h2})
+	if err == nil {
+		t.Fatal("expected error from BatchFree with already-freed handle")
+	}
+
+	if pool.Get(h2) != nil {
+		t.Fatal("h2 should have been freed despite h1 error")
+	}
+}
+
+func TestSlabLastFreeChunkHintPreserved(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(2), WithGrowthPolicy(GrowFixed))
+
+	h1, _ := pool.Alloc()
+	h2, _ := pool.Alloc()
+	h3, _ := pool.Alloc()
+	_ = h3
+
+	pool.Free(h1)
+
+	h4, err := pool.Alloc()
+	if err != nil {
+		t.Fatalf("Alloc after free: %v", err)
+	}
+	if h4.IsZero() {
+		t.Fatal("got zero handle")
+	}
+
+	pool.Free(h2)
+	pool.Free(h4)
+}
+
 // --- Benchmarks ---
 
 func BenchmarkSlabAlloc(b *testing.B) {
