@@ -7,8 +7,10 @@
 
 # Test artifacts
 *.test
+cover.out
 coverage.txt
 benchmark.txt
+results.txt
 
 # IDE
 .idea/
