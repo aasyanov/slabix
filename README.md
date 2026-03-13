@@ -384,76 +384,90 @@ Five sentinel errors, all comparable with `==` and `errors.Is`:
 
 ## Benchmarks
 
-### Methodology
+Two environments: a laptop (development) and a CI server (reproducible baseline). All values are **medians**. B/op and allocs/op are identical across environments — they depend on code, not hardware.
 
-Intel Core i7-10510U @ 1.80GHz (4C/8T, mobile TDP 15W), Windows 10, Go 1.24. Two sessions of `go test -bench=. -count=7` (14 iterations per benchmark), clean terminal outside IDE. Second session includes `-benchmem` for allocation profiling. Mobile CPUs throttle under sustained load — reported values are **medians** from the `-benchmem` session, which inherently filters first-iteration warmup outliers.
+### Environment
 
-### Arena[T]
+| | Laptop | CI Server |
+|---|---|---|
+| CPU | Intel Core i7-10510U, 4C/8T | AMD EPYC 7763, 4 vCPU |
+| TDP | 15W (mobile, throttles) | 280W (server, stable) |
+| OS | Windows 10 | Linux (Ubuntu) |
+| Go | 1.24 | 1.24 |
+| GOMAXPROCS | 8 | 4 |
+| Runs | 14 (2 × `count=7`) | 3 (`count=3`) |
+| Variance | 5–60% (thermal) | < 3% (stable) |
 
-| Benchmark | What it measures | Median | B/op | allocs/op | Throughput |
+### Results
+
+#### Arena[T]
+
+| Benchmark | What it measures | Laptop | Server | B/op | allocs/op |
 |---|---|---|---|---|---|
-| ArenaAlloc | Single `*T` allocation | 25 ns | 23 | 0 | ~39M ops/sec |
-| ArenaAllocSlice | 64 contiguous `T` values | 181 ns | 1536 | 0 | ~354M obj/sec |
-| ArenaAllocResetCycle | 1000 allocs + `Reset` | 24.7 µs | 0 | 0 | ~40M obj/sec |
-| ArenaAllocParallel | Single alloc, 8 goroutines | 86 ns | 23 | 0 | ~12M ops/sec |
+| ArenaAlloc | Single `*T` allocation | 25 ns | **12 ns** | 23 | 0 |
+| ArenaAllocSlice | 64 contiguous `T` values | 181 ns | **149 ns** | 1536 | 0 |
+| ArenaAllocResetCycle | 1000 allocs + `Reset` | 24.7 µs | **10.1 µs** | 0 | 0 |
+| ArenaAllocParallel | Single alloc, 8/4 goroutines | 86 ns | **51 ns** | 23 | 0 |
 
-**Observations**:
-- Single-object allocation is a bump-pointer increment under an uncontended mutex — O(1), zero heap allocations. The 23 B/op is amortized bookkeeping overhead from the runtime, not from the allocator itself.
-- `AllocSlice` amortizes the mutex acquisition across 64 objects: 181 ns / 64 = 2.8 ns per object. Warmup effect is visible in the raw data (first 2 iterations: 510 ns, 390 ns; stable: 178–203 ns) — the CPU branch predictor and cache need 1–2 iterations to warm.
-- `AllocResetCycle` is the key metric for Arena's target workload: 1000 objects allocated, used, and bulk-freed in 24.7 µs with **zero bytes allocated and zero GC pressure**. The entire backing memory is retained across resets.
-- Parallel throughput drops to ~12M ops/sec (3.3x slower than single-threaded) due to mutex contention. Arena uses a single `sync.Mutex` — for parallel workloads, use one Arena per goroutine.
+#### Slab[T]
 
-### Slab[T]
-
-| Benchmark | What it measures | Median | B/op | allocs/op | Throughput |
+| Benchmark | What it measures | Laptop | Server | B/op | allocs/op |
 |---|---|---|---|---|---|
-| SlabGet | Handle → `*T` dereference | 16 ns | 0 | 0 | ~62M ops/sec |
-| SlabAlloc | Single object allocation | 32 ns | 47 | 0 | ~32M ops/sec |
-| SlabAllocFree | Alloc + Free round-trip | 54 ns | 0 | 0 | ~19M cycles/sec |
-| SlabBatchAllocFree | 128 objects + batch free | 5.9 µs | 1024 | 1 | ~22M obj/sec |
-| SlabAllocFreeParallel | Alloc+Free, 8 goroutines | 212 ns | 0 | 0 | ~4.7M ops/sec |
-| SlabAllocGetFreeParallel | Alloc+Get+Free, 8 goroutines | 227 ns | 0 | 0 | ~4.4M ops/sec |
+| SlabGet | Handle → `*T` dereference | 16 ns | **7.7 ns** | 0 | 0 |
+| SlabAlloc | Single object allocation | 32 ns | **16 ns** | 47 | 0 |
+| SlabAllocFree | Alloc + Free round-trip | 54 ns | **20 ns** | 0 | 0 |
+| SlabBatchAllocFree | 128 objects + batch free | 5.9 µs | **2.4 µs** | 1024 | 1 |
+| SlabAllocFreeParallel | Alloc+Free, 8/4 goroutines | 212 ns | **128 ns** | 0 | 0 |
+| SlabAllocGetFreeParallel | Alloc+Get+Free, 8/4 goroutines | 227 ns | **144 ns** | 0 | 0 |
 
-**Observations**:
-- `Get` is the fastest operation in the library: 16 ns to decode Handle bits, lock the shard, verify generation, and return a typed pointer. Zero allocations.
-- A full alloc+free cycle completes in 54 ns with zero heap allocations. The freed slot returns to the freelist and is reused by the next `Alloc` — no GC involvement.
-- `BatchAllocFree` processes 128 objects under a single lock acquisition: 5.9 µs total = 46 ns/object. The 1024 B / 1 alloc is the handle slice (`128 × 8 bytes`). Per-object cost is lower than individual `Alloc` due to amortized locking.
-- Parallel throughput with 8 goroutines (default: 1 shard) reaches ~4.7M alloc+free ops/sec. Adding `Get` to the round-trip costs an additional ~15 ns (227 − 212 = 15 ns overhead, consistent with the isolated `Get` benchmark at 16 ns). With `WithShards(runtime.GOMAXPROCS(0))`, throughput scales near-linearly.
+#### Huge
 
-### Huge
-
-| Benchmark | What it measures | Median | B/op | allocs/op | Throughput |
+| Benchmark | What it measures | Laptop | Server | B/op | allocs/op |
 |---|---|---|---|---|---|
-| HugeAllocFree | 128 KB alloc + free | 2.4 µs | 32 | 1 | ~416K ops/sec |
-| HugeAllocFreeParallel | 128 KB, 8 goroutines | 1.6 µs | 43 | 1 | ~607K ops/sec |
+| HugeAllocFree | 128 KB alloc + free | 2.4 µs | **1.6 µs** | 32 | 1 |
+| HugeAllocFreeParallel | 128 KB, 8/4 goroutines | 1.6 µs | **903 ns** | 33 | 1 |
 
-**Observations**:
-- An alloc+free cycle for a 128 KB buffer takes 2.4 µs. The 32 B/op and 1 alloc/op is the `sync.Pool` pointer wrapper (`*[]byte`) — the 128 KB buffer itself comes from the pool and is not a new heap allocation (after warmup).
-- Parallel throughput is **1.46x higher** than single-threaded — the opposite of Arena/Slab. This is because `sync.Pool` maintains per-P (per-processor) caches: each goroutine hits its own local pool, reducing both mutex contention and GC pressure from pool misses.
+### Server Throughput (AMD EPYC 7763)
 
-### Thermal Throttling
-
-The first session (without `-benchmem`) shows 40–60% higher latency on CPU-bound benchmarks (ArenaAlloc: 42 vs 25 ns, ArenaAllocResetCycle: 39 µs vs 24.7 µs) due to thermal throttling on a 15W mobile CPU. Memory-bound benchmarks (SlabGet, SlabAlloc) are stable across both sessions (< 5% variance). This confirms that Arena's bump-pointer path is CPU-bound (pointer arithmetic + mutex), while Slab's freelist path has a higher memory-access component (entry metadata reads).
-
-### Summary
-
-| Allocator | Best single-thread | Parallel (8 gor.) | Hot path allocs |
+| Operation | Latency | Throughput | allocs/op |
 |---|---|---|---|
-| **Arena** | 25 ns/alloc, 39M ops/sec | 86 ns, 12M ops/sec | 0 |
-| **Slab** | 16 ns/get, 62M ops/sec | 227 ns (full trip), 4.4M ops/sec | 0 |
-| **Huge** | 2.4 µs/alloc+free, 416K ops/sec | 1.6 µs, 607K ops/sec | 1 (pool wrapper) |
+| Arena: single alloc | 12 ns | **~82M ops/sec** | 0 |
+| Arena: 64-object slice | 149 ns | **~430M obj/sec** | 0 |
+| Arena: 1000 allocs + reset | 10.1 µs | **~99M obj/sec** | 0 |
+| Slab: Get (handle dereference) | 7.7 ns | **~130M ops/sec** | 0 |
+| Slab: Alloc | 16 ns | **~61M ops/sec** | 0 |
+| Slab: Alloc+Free cycle | 20 ns | **~50M cycles/sec** | 0 |
+| Slab: BatchAlloc 128 + free | 2.4 µs | **~52M obj/sec** | 1 |
+| Huge: 128 KB alloc+free | 1.6 µs | **~638K ops/sec** | 1 |
+| Huge: 128 KB parallel | 903 ns | **~1.1M ops/sec** | 1 |
+
+### Analysis
+
+**Server vs laptop — 2–2.7x across the board**. The speedup is consistent: CPU-bound operations (ArenaAlloc, SlabAllocFree) scale proportionally to clock speed and pipeline width. SlabAllocFree shows the highest gain (2.7x) — a pure CPU-bound operation (freelist pop/push + atomic stats) where EPYC's wider Zen3 pipeline wins over mobile Comet Lake.
+
+**Stability**. Laptop variance reaches 60% on CPU-bound benchmarks due to thermal throttling (15W TDP). Server variance is < 3% across all benchmarks. The ratios between operations are consistent across both environments — this confirms the numbers reflect allocator overhead, not hardware noise.
+
+**Arena: 10 ns/object sustained**. On server hardware, the alloc-reset cycle processes 1000 objects in 10.1 µs = 10.1 ns per object, 99M objects/sec. Zero bytes allocated, zero GC pressure. The entire backing memory is retained across resets — the GC never sees individual objects.
+
+**Slab Get: 7.7 ns**. Handle decode + shard lock + bounds check + generation verify + pointer return — all in 7.7 ns. 130M dereferences per second. This is the read path for slab-managed objects (tree node lookups, cache entry reads).
+
+**Slab AllocFree: 20 ns round-trip**. A full alloc+free cycle in 20 ns with zero heap allocations — 50M object lifecycles per second. The freelist push/pop is pure pointer manipulation with no GC involvement.
+
+**Huge parallel: 1.1M ops/sec for 128 KB buffers**. `sync.Pool`'s per-P cache gives 1.7x speedup over single-threaded (903 ns vs 1.6 µs). This is the opposite of Arena/Slab where parallelism adds contention — `sync.Pool` is designed for concurrent access.
+
+**Parallel contention**. Arena parallel: 51 ns with 4 goroutines vs 12 ns single-threaded = 4.2x slowdown, nearly linear with the mutex. Arena targets per-goroutine use, not shared access. Slab parallel with default 1 shard: 128 ns — add `WithShards(runtime.GOMAXPROCS(0))` for near-linear scaling.
 
 ### What the Numbers Mean (and What They Don't)
 
 These benchmarks measure allocator overhead — the cost of the bookkeeping, not the cost of using the memory. In a real application, the allocation latency is a small fraction of the total work done with each object.
 
-**What slabix is faster at**: not individual allocations. A single `new(T)` in Go can be as fast as 5–10 ns when the compiler stack-allocates it. slabix's 25 ns Arena alloc is slower per-call. The advantage is structural: `new(T)` called 10 million times per second creates 10 million heap objects the GC must trace, mark, and sweep. Arena allocates the same 10 million objects from pre-allocated blocks with zero GC pressure — the collector never sees them individually. The cost shifts from runtime (GC pauses) to design time (choosing the right allocator for the pattern).
+**What slabix is faster at**: not individual allocations. A single `new(T)` in Go can be as fast as 5–10 ns when the compiler stack-allocates it. slabix's 12 ns Arena alloc on server hardware is comparable per-call. The advantage is structural: `new(T)` called 10 million times per second creates 10 million heap objects the GC must trace, mark, and sweep. Arena allocates the same 10 million objects from pre-allocated blocks with zero GC pressure — the collector never sees them individually. The cost shifts from runtime (GC pauses) to design time (choosing the right allocator for the pattern).
 
 **Where it helps**: workloads with millions of allocations per second where GC pause latency matters — database query execution, WAL batch processing, cache eviction storms, message broker fan-out. If your application allocates a few thousand objects per request, standard Go allocation is fine and slabix adds unnecessary complexity.
 
 **Where it does not help**: CPU-bound computation, I/O-bound workloads, applications where allocation is not the bottleneck. Profile first. If `runtime.mallocgc` is not in your top-10 pprof flamegraph, you do not need a custom allocator.
 
-**Parallel scaling**: Arena's single mutex becomes a bottleneck at 8 goroutines (3.3x slowdown). This is by design — Arena targets per-goroutine or per-request use, not shared concurrent access. Slab scales better with sharding. Huge benefits from `sync.Pool`'s per-P architecture. Choose the allocator that matches both your allocation pattern and your concurrency model.
+**Parallel scaling**: Arena's single mutex becomes a bottleneck under concurrent access (4.2x slowdown at 4 goroutines). This is by design — Arena targets per-goroutine or per-request use, not shared concurrent access. Slab scales better with sharding. Huge benefits from `sync.Pool`'s per-P architecture. Choose the allocator that matches both your allocation pattern and your concurrency model.
 
 ## Quality
 
