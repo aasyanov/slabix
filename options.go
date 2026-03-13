@@ -21,11 +21,13 @@ const (
 // arenaConfig holds all Arena configuration. Assembled via functional
 // [ArenaOption] values passed to [NewArena].
 type arenaConfig struct {
-	blockSize int
-	maxBlocks int
+	blockSize int // bytes per block; objects per block = blockSize / sizeof(T)
+	maxBlocks int // hard cap on block count; 0 = unlimited
 	growable  bool
 }
 
+// defaultArenaConfig returns the baseline Arena configuration:
+// 4 MB blocks, unlimited growth, growable.
 func defaultArenaConfig() arenaConfig {
 	return arenaConfig{
 		blockSize: 1 << 22, // 4 MB
@@ -50,8 +52,8 @@ func WithBlockSize(n int) ArenaOption {
 }
 
 // WithMaxBlocks sets the maximum number of blocks the arena may
-// allocate. Zero means unlimited. When the limit is reached and the
-// arena is not growable, [Arena.Alloc] returns [ErrOutOfMemory].
+// allocate. Zero means unlimited. When the limit is reached,
+// [Arena.Alloc] returns [ErrOutOfMemory] even if growth is enabled.
 func WithMaxBlocks(n int) ArenaOption {
 	return func(c *arenaConfig) {
 		if n >= 0 {
@@ -71,14 +73,16 @@ func WithGrowable(v bool) ArenaOption {
 // slabConfig holds all Slab configuration. Assembled via functional
 // [SlabOption] values passed to [NewSlab].
 type slabConfig struct {
-	capacity   int
-	shards     int
-	growable   bool
-	growth     GrowthPolicy
-	maxChunks  int
-	batchHint  int
+	capacity  int          // initial object slots, split across shards
+	shards    int          // number of independent partitions
+	growable  bool         // whether new chunks may be added on exhaustion
+	growth    GrowthPolicy // sizing strategy for new chunks
+	maxChunks int          // per-shard chunk cap; 0 = unlimited
+	batchHint int          // expected batch size for BatchAlloc pre-sizing
 }
 
+// defaultSlabConfig returns the baseline Slab configuration:
+// 4096 slots, 1 shard, growable with adaptive policy, no chunk cap.
 func defaultSlabConfig() slabConfig {
 	return slabConfig{
 		capacity:  4096,
@@ -157,12 +161,15 @@ func WithBatchHint(n int) SlabOption {
 	}
 }
 
-// hugeConfig holds all Huge allocator configuration.
+// hugeConfig holds all Huge allocator configuration. Assembled via
+// functional [HugeOption] values passed to [NewHuge].
 type hugeConfig struct {
-	alignment int
-	poolReuse bool
+	alignment int  // byte alignment; must be a power of two
+	poolReuse bool // return freed buffers to size-class pools
 }
 
+// defaultHugeConfig returns the baseline Huge configuration:
+// 64-byte (cache-line) alignment, pool reuse enabled.
 func defaultHugeConfig() hugeConfig {
 	return hugeConfig{
 		alignment: 64, // cache-line
@@ -175,7 +182,8 @@ func defaultHugeConfig() hugeConfig {
 type HugeOption func(*hugeConfig)
 
 // WithAlignment sets the byte alignment for huge allocations.
-// Must be a power of two. Default: 64 (cache-line).
+// Must be a positive power of two; invalid values are silently
+// ignored. Default: 64 (cache-line).
 func WithAlignment(n int) HugeOption {
 	return func(c *hugeConfig) {
 		if n > 0 && n&(n-1) == 0 {

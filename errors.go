@@ -12,9 +12,9 @@ var (
 	ErrClosed = errors.New("slabix: allocator is closed")
 
 	// ErrOutOfMemory is returned when an allocation cannot be satisfied
-	// because capacity is exhausted and growth is disabled, or because
-	// the configured [WithMaxBlocks] or [WithMaxChunks] limit has been
-	// reached.
+	// because growth is disabled ([WithGrowable]/[WithSlabGrowable]),
+	// or because the configured [WithMaxBlocks] or [WithMaxChunks]
+	// limit has been reached.
 	ErrOutOfMemory = errors.New("slabix: out of memory")
 
 	// ErrDoubleFree is returned when [Slab.Free] or [Huge.Free] is
@@ -28,6 +28,6 @@ var (
 	ErrInvalidHandle = errors.New("slabix: invalid handle")
 
 	// ErrTooLarge is returned when the requested allocation size exceeds
-	// the allocator's maximum object size.
+	// the allocator's maximum object size. Reserved for future use.
 	ErrTooLarge = errors.New("slabix: allocation too large")
 )
