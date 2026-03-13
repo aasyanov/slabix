@@ -95,6 +95,7 @@ func (a *Arena[T]) Alloc() (*T, error) {
 	}
 	ptr, err := a.allocLocked()
 	a.mu.Unlock()
+
 	return ptr, err
 }
 
@@ -124,6 +125,7 @@ func (a *Arena[T]) allocLocked() (*T, error) {
 		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
+
 	if a.cfg.maxBlocks > 0 && len(a.blocks) >= a.cfg.maxBlocks {
 		a.stats.addOOM()
 		return nil, ErrOutOfMemory
@@ -158,6 +160,7 @@ func (a *Arena[T]) AllocSlice(n int) ([]T, error) {
 	if a.closed.Load() {
 		return nil, ErrClosed
 	}
+
 	if n <= 0 {
 		return nil, nil
 	}
@@ -169,6 +172,7 @@ func (a *Arena[T]) AllocSlice(n int) ([]T, error) {
 	}
 	s, err := a.allocSliceLocked(n)
 	a.mu.Unlock()
+
 	return s, err
 }
 
@@ -202,6 +206,7 @@ func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
+
 	if a.cfg.maxBlocks > 0 && len(a.blocks) >= a.cfg.maxBlocks {
 		a.stats.addOOM()
 		return nil, ErrOutOfMemory
@@ -334,6 +339,7 @@ func (a *Arena[T]) Cap() int {
 		n += len(a.blocks[i].data)
 	}
 	a.mu.Unlock()
+
 	return n
 }
 
@@ -349,5 +355,6 @@ func (a *Arena[T]) Len() int {
 	}
 	n += a.pos
 	a.mu.Unlock()
+
 	return n
 }
