@@ -105,9 +105,11 @@ func (a *Arena[T]) allocLocked() (*T, error) {
 	}
 
 	if !a.cfg.growable {
+		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
 	if a.cfg.maxBlocks > 0 && len(a.blocks) >= a.cfg.maxBlocks {
+		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
 
@@ -121,6 +123,7 @@ func (a *Arena[T]) allocLocked() (*T, error) {
 	a.cur = len(a.blocks) - 1
 	a.pos = 0
 	a.stats.addBlock()
+	a.stats.addGrow()
 	a.stats.addBytes(uint64(objsPerBlock) * uint64(a.objSz))
 
 	return a.allocLocked()
@@ -166,9 +169,11 @@ func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 	}
 
 	if !a.cfg.growable {
+		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
 	if a.cfg.maxBlocks > 0 && len(a.blocks) >= a.cfg.maxBlocks {
+		a.stats.addOOM()
 		return nil, ErrOutOfMemory
 	}
 
@@ -184,6 +189,7 @@ func (a *Arena[T]) allocSliceLocked(n int) ([]T, error) {
 	a.cur = len(a.blocks) - 1
 	a.pos = 0
 	a.stats.addBlock()
+	a.stats.addGrow()
 	a.stats.addBytes(uint64(objsPerBlock) * uint64(a.objSz))
 
 	return a.allocSliceLocked(n)
@@ -276,6 +282,7 @@ func (a *Arena[T]) EnsureCap(n int) {
 		blk := arenaBlock[T]{data: make([]T, blockCap)}
 		a.blocks = append(a.blocks, blk)
 		a.stats.addBlock()
+		a.stats.addGrow()
 		a.stats.addBytes(uint64(blockCap) * uint64(a.objSz))
 		totalCap += blockCap
 	}

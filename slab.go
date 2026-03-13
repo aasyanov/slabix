@@ -178,12 +178,15 @@ func (sh *slabShard[T]) alloc(shardIdx uint32) (Handle[T], error) {
 	chunkIdx := sh.findFreeChunk()
 	if chunkIdx == -1 {
 		if !sh.cfg.growable {
+			sh.stats.addOOM()
 			return Handle[T]{}, ErrOutOfMemory
 		}
 		if sh.cfg.maxChunks > 0 && len(sh.chunks) >= sh.cfg.maxChunks {
+			sh.stats.addOOM()
 			return Handle[T]{}, ErrOutOfMemory
 		}
 		sh.addChunk(sh.nextChunkSize())
+		sh.stats.addGrow()
 		chunkIdx = len(sh.chunks) - 1
 		sh.lastFreeChunk = chunkIdx
 	}
