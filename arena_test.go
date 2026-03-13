@@ -488,6 +488,43 @@ func TestArenaEnsureCapGrowNoFalseReset(t *testing.T) {
 	}
 }
 
+func TestArenaAllocAfterOOMReset(t *testing.T) {
+	arena := NewArena[testEntry](
+		WithBlockSize(24*2),
+		WithGrowable(false),
+	)
+
+	for {
+		_, err := arena.Alloc()
+		if err != nil {
+			break
+		}
+	}
+
+	arena.Reset()
+
+	ptr, err := arena.Alloc()
+	if err != nil {
+		t.Fatalf("Alloc after OOM+Reset: %v", err)
+	}
+	if ptr == nil {
+		t.Fatal("Alloc returned nil after OOM+Reset")
+	}
+}
+
+func TestArenaEnsureCapMaxBlocks(t *testing.T) {
+	arena := NewArena[testEntry](
+		WithBlockSize(24*4),
+		WithMaxBlocks(1),
+	)
+
+	arena.EnsureCap(100)
+
+	if arena.Cap() > 4 {
+		t.Fatalf("Cap = %d after EnsureCap(100) with maxBlocks=1, want <= 4", arena.Cap())
+	}
+}
+
 func TestArenaActiveObjectsAfterReset(t *testing.T) {
 	arena := NewArena[testEntry](WithBlockSize(4096))
 

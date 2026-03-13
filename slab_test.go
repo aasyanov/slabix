@@ -213,7 +213,7 @@ func TestSlabCap(t *testing.T) {
 	}
 }
 
-func TestSlabGrowthCapped(t *testing.T) {
+func TestSlabGrowthAdaptive(t *testing.T) {
 	pool := NewSlab[testNode](
 		WithSlabCapacity(4),
 		WithGrowthPolicy(GrowAdaptive),
@@ -580,6 +580,31 @@ func TestSlabLastFreeChunkHintPreserved(t *testing.T) {
 	pool.Free(h4)
 }
 
+func TestSlabAllocAfterOOMFree(t *testing.T) {
+	pool := NewSlab[testNode](WithSlabCapacity(4), WithSlabGrowable(false))
+
+	handles := make([]Handle[testNode], 0, 4)
+	for i := 0; i < 4; i++ {
+		h, _ := pool.Alloc()
+		handles = append(handles, h)
+	}
+
+	_, err := pool.Alloc()
+	if err != ErrOutOfMemory {
+		t.Fatalf("got %v, want ErrOutOfMemory", err)
+	}
+
+	pool.Free(handles[0])
+
+	h, err := pool.Alloc()
+	if err != nil {
+		t.Fatalf("Alloc after OOM+Free: %v", err)
+	}
+	if h.IsZero() {
+		t.Fatal("got zero handle after OOM+Free")
+	}
+}
+
 func TestSlabBatchAllocPartialOOM(t *testing.T) {
 	pool := NewSlab[testNode](WithSlabCapacity(4), WithSlabGrowable(false))
 
@@ -628,7 +653,7 @@ func BenchmarkSlabAllocFree(b *testing.B) {
 	}
 }
 
-func BenchmarkSlabBatchAlloc(b *testing.B) {
+func BenchmarkSlabBatchAllocFree(b *testing.B) {
 	pool := NewSlab[testNode](WithSlabCapacity(1 << 16))
 	b.ResetTimer()
 	for b.Loop() {
@@ -637,7 +662,7 @@ func BenchmarkSlabBatchAlloc(b *testing.B) {
 	}
 }
 
-func BenchmarkSlabAllocParallel(b *testing.B) {
+func BenchmarkSlabAllocFreeParallel(b *testing.B) {
 	pool := NewSlab[testNode](
 		WithSlabCapacity(1<<16),
 		WithShards(runtime.GOMAXPROCS(0)),
@@ -652,7 +677,7 @@ func BenchmarkSlabAllocParallel(b *testing.B) {
 	})
 }
 
-func BenchmarkSlabAllocFreeParallel(b *testing.B) {
+func BenchmarkSlabAllocGetFreeParallel(b *testing.B) {
 	pool := NewSlab[testNode](
 		WithSlabCapacity(1<<16),
 		WithShards(runtime.GOMAXPROCS(0)),

@@ -275,11 +275,11 @@ func (a *Arena[T]) Stats() Stats {
 	return a.stats.snapshot()
 }
 
-// EnsureCap ensures the arena can hold at least n objects without
-// allocating new blocks. The bump pointer is always rewound to the
-// beginning. If current capacity is sufficient, existing blocks are
-// reused as-is. Otherwise, additional blocks are allocated to reach
-// the requested capacity.
+// EnsureCap ensures the arena can hold at least n objects. The bump
+// pointer is always rewound to the beginning, invalidating all existing
+// allocations. If current capacity is sufficient, existing blocks are
+// reused. Otherwise, additional blocks are allocated to reach the
+// requested capacity, subject to [WithMaxBlocks] limits.
 //
 // This is the recommended pattern for repeated parse/execute cycles
 // where the working set size is known ahead of time:
@@ -315,6 +315,9 @@ func (a *Arena[T]) EnsureCap(n int) {
 	}
 
 	for totalCap < n {
+		if a.cfg.maxBlocks > 0 && len(a.blocks) >= a.cfg.maxBlocks {
+			break
+		}
 		remaining := n - totalCap
 		blockCap := int(objsPerBlock)
 		if remaining > blockCap {

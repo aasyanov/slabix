@@ -113,7 +113,7 @@ func TestHugeLen(t *testing.T) {
 	}
 }
 
-func TestHugeMultiple(t *testing.T) {
+func TestHugeAllocMultipleSizes(t *testing.T) {
 	h := NewHuge()
 	sizes := []int{1024, 64 * 1024, 256 * 1024, 1024 * 1024}
 	bufs := make([][]byte, len(sizes))
@@ -315,7 +315,7 @@ func TestHugeAllocStatsActive(t *testing.T) {
 
 // --- Benchmarks ---
 
-func BenchmarkHugeAlloc(b *testing.B) {
+func BenchmarkHugeAllocFree(b *testing.B) {
 	h := NewHuge()
 	b.ResetTimer()
 	for b.Loop() {
@@ -324,7 +324,7 @@ func BenchmarkHugeAlloc(b *testing.B) {
 	}
 }
 
-func BenchmarkHugeAllocParallel(b *testing.B) {
+func BenchmarkHugeAllocFreeParallel(b *testing.B) {
 	h := NewHuge()
 	b.SetParallelism(runtime.GOMAXPROCS(0))
 	b.ResetTimer()
