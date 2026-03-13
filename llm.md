@@ -222,6 +222,24 @@ Free    → delete(live, ptr) → pool.Put(&buf) if class >= 0
 
 ---
 
+## EDGE CASES (zero / negative / nil inputs)
+
+```
+AllocSlice(0), AllocSlice(-1)       → (nil, nil)       — not an error
+BatchAlloc(0), BatchAlloc(-1)       → (nil, nil)       — not an error
+Huge.Alloc(0), Huge.Alloc(-1)      → (nil, nil)       — not an error
+EnsureCap(0), EnsureCap(-1)        → no-op            — not an error
+Slab.Free(Handle{})                → ErrInvalidHandle  — zero handle is never valid
+Slab.Get(Handle{})                 → nil               — not an error
+Huge.Free(nil), Huge.Free([]byte{})→ ErrInvalidHandle  — empty/nil buffer
+Huge.Free(unknownBuf)              → ErrDoubleFree     — any untracked buffer
+BatchFree with mixed errors        → frees ALL, returns first error
+```
+
+All `Alloc` methods return **zeroed** values — do not manually zero returned memory.
+
+---
+
 ## MISTAKES TO AVOID
 
 1. **Holding Arena pointers after Reset** — they point into reused memory
