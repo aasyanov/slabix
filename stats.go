@@ -113,6 +113,12 @@ func (sc *statsCollector) addBlock() {
 	sc.blockCount.Add(1)
 }
 
+// subBlock decrements the current block/chunk count by one. Used by
+// Huge when a buffer is freed and is no longer tracked.
+func (sc *statsCollector) subBlock() {
+	sc.blockCount.Add(^uint64(0))
+}
+
 // addGrow increments the grow-event counter. Called when the allocator
 // expands beyond its initial backing storage.
 func (sc *statsCollector) addGrow() {

@@ -255,8 +255,45 @@ func TestHugeAllocNegative(t *testing.T) {
 func TestHugeEmptySliceFree(t *testing.T) {
 	h := NewHuge()
 	err := h.Free([]byte{})
+	if err != ErrInvalidHandle {
+		t.Fatalf("got %v, want ErrInvalidHandle for empty non-nil slice", err)
+	}
+}
+
+func TestHugeFreeResliced(t *testing.T) {
+	h := NewHuge()
+	buf, _ := h.Alloc(128 * 1024)
+
+	err := h.Free(buf[1:])
 	if err != ErrDoubleFree {
-		t.Fatalf("got %v, want ErrDoubleFree for empty non-nil slice", err)
+		t.Fatalf("got %v, want ErrDoubleFree for resliced buffer", err)
+	}
+
+	if err := h.Free(buf); err != nil {
+		t.Fatalf("Free original: %v", err)
+	}
+}
+
+func TestHugeBlockCountTracksLive(t *testing.T) {
+	h := NewHuge()
+	buf1, _ := h.Alloc(64 * 1024)
+	buf2, _ := h.Alloc(64 * 1024)
+
+	s := h.Stats()
+	if s.BlockCount != 2 {
+		t.Fatalf("BlockCount = %d after 2 allocs, want 2", s.BlockCount)
+	}
+
+	h.Free(buf1)
+	s = h.Stats()
+	if s.BlockCount != 1 {
+		t.Fatalf("BlockCount = %d after 1 free, want 1", s.BlockCount)
+	}
+
+	h.Free(buf2)
+	s = h.Stats()
+	if s.BlockCount != 0 {
+		t.Fatalf("BlockCount = %d after all freed, want 0", s.BlockCount)
 	}
 }
 
